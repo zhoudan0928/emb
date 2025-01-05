@@ -2,14 +2,39 @@
   "version": 2,
   "functions": {
     "api/*.js": {
-      "memory": 1024,
-      "maxDuration": 60
+      "memory": 3008,
+      "maxDuration": 300
     }
   },
   "routes": [
     {
+      "src": "/embywebsocket",
+      "dest": "/api/app.js",
+      "headers": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+      }
+    },
+    {
+      "src": "/Videos/.*|/Audio/.*",
+      "dest": "/api/app.js",
+      "headers": {
+        "Cache-Control": "public, max-age=3600",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+      }
+    },
+    {
       "src": "/(.*)",
-      "dest": "/api/app.js"
+      "dest": "/api/app.js",
+      "headers": {
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+      }
     }
   ]
 } 
