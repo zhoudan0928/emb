@@ -8,8 +8,21 @@
   ],
   "routes": [
     {
-      "src": "/(.*)",
+      "src": "/embywebsocket",
       "dest": "/app.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/app.js",
+      "headers": {
+        "Cache-Control": "public, max-age=0, must-revalidate"
+      }
     }
-  ]
+  ],
+  "functions": {
+    "app.js": {
+      "memory": 1024,
+      "maxDuration": 10
+    }
+  }
 } 
