@@ -82,7 +82,7 @@ app.use('/embywebsocket', (req, res) => {
 });
 
 // 视频流处理
-app.use(['/emby/videos/:id/*', '/Videos/:id/*'], async (req, res) => {
+app.use(['/emby/videos/:id/*', '/Videos/:id/*', '/emby/Videos/:id/*'], async (req, res) => {
     try {
         const targetUrl = new URL(req.url, EMBY_SERVER);
         const protocol = targetUrl.protocol === 'https:' ? https : http;
@@ -94,13 +94,6 @@ app.use(['/emby/videos/:id/*', '/Videos/:id/*'], async (req, res) => {
             res.redirect(newUrl);
             return;
         }
-        
-        // 获取范围请求头
-        const range = req.headers.range;
-        if (!range) {
-            res.status(400).json({ error: 'Range header required' });
-            return;
-        }
 
         // 设置请求选项
         const options = {
@@ -110,10 +103,14 @@ app.use(['/emby/videos/:id/*', '/Videos/:id/*'], async (req, res) => {
             method: 'GET',
             headers: {
                 ...req.headers,
-                host: targetUrl.host,
-                range: range
+                host: targetUrl.host
             }
         };
+
+        // 如果有 Range 头，添加它
+        if (req.headers.range) {
+            options.headers.range = req.headers.range;
+        }
 
         // 创建请求
         const proxyReq = protocol.request(options, (proxyRes) => {
@@ -135,7 +132,18 @@ app.use(['/emby/videos/:id/*', '/Videos/:id/*'], async (req, res) => {
                 'Cache-Control': 'public, max-age=3600'
             };
 
-            res.writeHead(proxyRes.statusCode, headers);
+            // 删除可能导致问题的头
+            delete headers['content-length'];
+            delete headers['transfer-encoding'];
+
+            // 设置正确的状态码
+            let statusCode = proxyRes.statusCode;
+            if (req.headers.range) {
+                statusCode = 206;
+                headers['Accept-Ranges'] = 'bytes';
+            }
+
+            res.writeHead(statusCode, headers);
 
             // 使用较小的块大小
             const chunkSize = 64 * 1024; // 64KB chunks
