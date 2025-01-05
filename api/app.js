@@ -26,32 +26,58 @@ app.get('/healthz', (req, res) => {
 // WebSocket 处理
 app.use('/embywebsocket', (req, res) => {
     try {
-        const targetUrl = new URL('/embywebsocket', EMBY_SERVER);
-        const ws = new WebSocket(targetUrl.href);
+        if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
+            const targetUrl = new URL('/embywebsocket', EMBY_SERVER);
+            const wsClient = new WebSocket(targetUrl.href);
 
-        ws.on('open', () => {
-            res.writeHead(101, {
-                'Upgrade': 'websocket',
-                'Connection': 'Upgrade'
-            });
-            ws.pipe(res);
-        });
+            wsClient.on('open', () => {
+                // 创建到客户端的 WebSocket 连接
+                const wss = new WebSocket.Server({ noServer: true });
+                
+                wss.on('connection', function connection(ws) {
+                    // 从客户端到服务器的消息转发
+                    ws.on('message', function message(data) {
+                        wsClient.send(data);
+                    });
 
-        ws.on('error', (error) => {
-            console.error('WebSocket Error:', error);
-            if (!res.headersSent) {
-                res.status(502).json({
-                    error: 'WebSocket Error',
-                    message: error.message
+                    // 从服务器到客户端的消息转发
+                    wsClient.on('message', function message(data) {
+                        ws.send(data);
+                    });
+
+                    // 错误处理
+                    ws.on('error', console.error);
                 });
-            }
-        });
+
+                // 升级连接
+                wss.handleUpgrade(req, req.socket, Buffer.alloc(0), function done(ws) {
+                    wss.emit('connection', ws, req);
+                });
+            });
+
+            wsClient.on('error', (error) => {
+                console.error('WebSocket Error:', error);
+                if (!res.headersSent) {
+                    res.status(502).json({
+                        error: 'WebSocket Error',
+                        message: error.message
+                    });
+                }
+            });
+        } else {
+            res.status(400).json({
+                error: 'Bad Request',
+                message: 'WebSocket upgrade required'
+            });
+        }
     } catch (error) {
         console.error('WebSocket Setup Error:', error);
-        res.status(500).json({
-            error: 'WebSocket Setup Error',
-            message: error.message
-        });
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: 'WebSocket Setup Error',
+                message: error.message
+            });
+        }
     }
 });
 
@@ -73,9 +99,19 @@ app.use('/', async (req, res) => {
             headers: {
                 ...req.headers,
                 host: targetUrl.host,
-            },
-            timeout: req.url.includes('PlaybackInfo') ? 120000 : 60000 // 为播放信息请求设置更长的超时时间
+            }
         };
+
+        // 根据请求类型设置超时
+        let timeout = 10000; // 默认10秒
+        if (req.url.includes('PlaybackInfo')) {
+            timeout = 30000; // PlaybackInfo 30秒
+        } else if (req.url.includes('/Videos/') || req.url.includes('/Audio/')) {
+            timeout = 300000; // 视频/音频 5分钟
+        } else if (req.url.includes('/Sessions/')) {
+            timeout = 30000; // Sessions 相关 30秒
+        }
+        options.timeout = timeout;
 
         // 创建代理请求
         const proxyReq = protocol.request(options, (proxyRes) => {
@@ -93,7 +129,6 @@ app.use('/', async (req, res) => {
                 headers['Cache-Control'] = 'public, max-age=3600';
                 if (res.socket) {
                     res.socket.setNoDelay(true);
-                    res.socket.setTimeout(300000); // 5分钟超时
                 }
             }
 
@@ -127,13 +162,20 @@ app.use('/', async (req, res) => {
         });
 
         // 如果有请求体，转发它
-        if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
-            const bodyData = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-            proxyReq.write(bodyData);
+        if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+            let body = '';
+            req.on('data', chunk => {
+                body += chunk.toString();
+            });
+            req.on('end', () => {
+                if (body) {
+                    proxyReq.write(body);
+                }
+                proxyReq.end();
+            });
+        } else {
+            proxyReq.end();
         }
-
-        // 结束请求
-        proxyReq.end();
     } catch (error) {
         console.error('Error:', error);
         if (!res.headersSent) {
