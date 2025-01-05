@@ -23,62 +23,47 @@ app.get('/healthz', (req, res) => {
     res.json({ status: 'healthy' });
 });
 
-// WebSocket 处理
-app.use('/embywebsocket', (req, res) => {
-    try {
-        if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
-            const targetUrl = new URL('/embywebsocket', EMBY_SERVER);
-            const wsClient = new WebSocket(targetUrl.href);
+// 视频流处理中间件
+app.use((req, res, next) => {
+    // 检查是否是视频或音频请求
+    if (req.url.includes('/Videos/') || req.url.includes('/Audio/') || req.url.includes('/video/') || req.url.includes('/audio/')) {
+        // 检查是否是直接的媒体文件请求
+        if (req.url.includes('/original.') || req.url.includes('/stream')) {
+            // 构建目标 URL
+            const targetUrl = new URL(req.url, EMBY_SERVER);
+            
+            // 添加必要的查询参数
+            const searchParams = new URLSearchParams(req.url.split('?')[1] || '');
+            if (req.headers['range']) {
+                searchParams.set('range', req.headers['range']);
+            }
+            targetUrl.search = searchParams.toString();
 
-            wsClient.on('open', () => {
-                // 创建到客户端的 WebSocket 连接
-                const wss = new WebSocket.Server({ noServer: true });
-                
-                wss.on('connection', function connection(ws) {
-                    // 从客户端到服务器的消息转发
-                    ws.on('message', function message(data) {
-                        wsClient.send(data);
-                    });
+            // 设置必要的响应头
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', '*');
+            res.setHeader('Cache-Control', 'public, max-age=3600');
 
-                    // 从服务器到客户端的消息转发
-                    wsClient.on('message', function message(data) {
-                        ws.send(data);
-                    });
-
-                    // 错误处理
-                    ws.on('error', console.error);
-                });
-
-                // 升级连接
-                wss.handleUpgrade(req, req.socket, Buffer.alloc(0), function done(ws) {
-                    wss.emit('connection', ws, req);
-                });
-            });
-
-            wsClient.on('error', (error) => {
-                console.error('WebSocket Error:', error);
-                if (!res.headersSent) {
-                    res.status(502).json({
-                        error: 'WebSocket Error',
-                        message: error.message
-                    });
-                }
-            });
-        } else {
-            res.status(400).json({
-                error: 'Bad Request',
-                message: 'WebSocket upgrade required'
-            });
-        }
-    } catch (error) {
-        console.error('WebSocket Setup Error:', error);
-        if (!res.headersSent) {
-            res.status(500).json({
-                error: 'WebSocket Setup Error',
-                message: error.message
-            });
+            // 重定向到源服务器
+            return res.redirect(307, targetUrl.href);
         }
     }
+    next();
+});
+
+// WebSocket 处理
+app.use('/embywebsocket', (req, res) => {
+    // 构建 WebSocket URL
+    const targetUrl = new URL('/embywebsocket', EMBY_SERVER);
+    
+    // 设置响应头
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    
+    // 重定向到源服务器的 WebSocket
+    res.redirect(307, targetUrl.href);
 });
 
 // 创建代理处理函数
@@ -99,19 +84,9 @@ app.use('/', async (req, res) => {
             headers: {
                 ...req.headers,
                 host: targetUrl.host,
-            }
+            },
+            timeout: 9000 // 设置为9秒，留出一些余量
         };
-
-        // 根据请求类型设置超时
-        let timeout = 10000; // 默认10秒
-        if (req.url.includes('PlaybackInfo')) {
-            timeout = 30000; // PlaybackInfo 30秒
-        } else if (req.url.includes('/Videos/') || req.url.includes('/Audio/')) {
-            timeout = 300000; // 视频/音频 5分钟
-        } else if (req.url.includes('/Sessions/')) {
-            timeout = 30000; // Sessions 相关 30秒
-        }
-        options.timeout = timeout;
 
         // 创建代理请求
         const proxyReq = protocol.request(options, (proxyRes) => {
@@ -122,15 +97,6 @@ app.use('/', async (req, res) => {
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
                 'Access-Control-Allow-Headers': '*'
             };
-
-            // 如果是视频或音频内容，添加特殊处理
-            const contentType = proxyRes.headers['content-type'] || '';
-            if (contentType.includes('video/') || contentType.includes('audio/')) {
-                headers['Cache-Control'] = 'public, max-age=3600';
-                if (res.socket) {
-                    res.socket.setNoDelay(true);
-                }
-            }
 
             res.writeHead(proxyRes.statusCode, headers);
 
