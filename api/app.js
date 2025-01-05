@@ -81,6 +81,92 @@ app.use('/embywebsocket', (req, res) => {
     }
 });
 
+// 视频流处理
+app.use('/emby/videos/:id/*', async (req, res) => {
+    try {
+        const targetUrl = new URL(req.url, EMBY_SERVER);
+        const protocol = targetUrl.protocol === 'https:' ? https : http;
+        
+        // 获取范围请求头
+        const range = req.headers.range;
+        if (!range) {
+            res.status(400).json({ error: 'Range header required' });
+            return;
+        }
+
+        // 设置请求选项
+        const options = {
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+            path: targetUrl.pathname + targetUrl.search,
+            method: 'GET',
+            headers: {
+                ...req.headers,
+                host: targetUrl.host,
+                range: range
+            }
+        };
+
+        // 创建请求
+        const proxyReq = protocol.request(options, (proxyRes) => {
+            // 设置响应头
+            const headers = {
+                ...proxyRes.headers,
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET',
+                'Access-Control-Allow-Headers': '*',
+                'Cache-Control': 'public, max-age=3600'
+            };
+
+            res.writeHead(proxyRes.statusCode, headers);
+
+            // 使用较小的块大小
+            const chunkSize = 64 * 1024; // 64KB chunks
+            let buffer = Buffer.alloc(0);
+
+            proxyRes.on('data', (chunk) => {
+                buffer = Buffer.concat([buffer, chunk]);
+                
+                // 当缓冲区达到或超过块大小时发送数据
+                while (buffer.length >= chunkSize) {
+                    const chunk = buffer.slice(0, chunkSize);
+                    buffer = buffer.slice(chunkSize);
+                    res.write(chunk);
+                }
+            });
+
+            proxyRes.on('end', () => {
+                // 发送剩余的数据
+                if (buffer.length > 0) {
+                    res.write(buffer);
+                }
+                res.end();
+            });
+        });
+
+        // 错误处理
+        proxyReq.on('error', (error) => {
+            console.error('Video Stream Error:', error);
+            if (!res.headersSent) {
+                res.status(502).json({
+                    error: 'Video Stream Error',
+                    message: error.message
+                });
+            }
+        });
+
+        proxyReq.end();
+    } catch (error) {
+        console.error('Error:', error);
+        if (!res.headersSent) {
+            res.status(500).json({
+                error: 'Internal Server Error',
+                message: error.message
+            });
+        }
+    }
+});
+
 // 创建代理处理函数
 app.use('/', async (req, res) => {
     try {
@@ -106,8 +192,6 @@ app.use('/', async (req, res) => {
         let timeout = 10000; // 默认10秒
         if (req.url.includes('PlaybackInfo')) {
             timeout = 30000; // PlaybackInfo 30秒
-        } else if (req.url.includes('/Videos/') || req.url.includes('/Audio/')) {
-            timeout = 300000; // 视频/音频 5分钟
         } else if (req.url.includes('/Sessions/')) {
             timeout = 30000; // Sessions 相关 30秒
         }
@@ -122,15 +206,6 @@ app.use('/', async (req, res) => {
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
                 'Access-Control-Allow-Headers': '*'
             };
-
-            // 如果是视频或音频内容，添加特殊处理
-            const contentType = proxyRes.headers['content-type'] || '';
-            if (contentType.includes('video/') || contentType.includes('audio/')) {
-                headers['Cache-Control'] = 'public, max-age=3600';
-                if (res.socket) {
-                    res.socket.setNoDelay(true);
-                }
-            }
 
             res.writeHead(proxyRes.statusCode, headers);
 
