@@ -12,17 +12,30 @@
       "dest": "/app.js"
     },
     {
+      "src": "/Videos/.*|/Audio/.*",
+      "dest": "/app.js",
+      "headers": {
+        "Cache-Control": "public, max-age=3600",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+      }
+    },
+    {
       "src": "/(.*)",
       "dest": "/app.js",
       "headers": {
-        "Cache-Control": "public, max-age=0, must-revalidate"
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
       }
     }
   ],
   "functions": {
     "app.js": {
-      "memory": 1024,
-      "maxDuration": 10
+      "memory": 3008,
+      "maxDuration": 300
     }
   }
 } 
