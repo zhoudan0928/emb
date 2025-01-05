@@ -1,6 +1,8 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const compression = require('compression');
+const http = require('http');
+const https = require('https');
 require('dotenv').config();
 
 const app = express();
@@ -21,48 +23,79 @@ app.get('/healthz', (req, res) => {
     res.json({ status: 'healthy' });
 });
 
-// 配置代理选项
-const proxyOptions = {
-    target: EMBY_SERVER,
-    changeOrigin: true,
-    secure: false,
-    ws: true,
-    timeout: 60000,
-    buffer: true,
-    onProxyRes: (proxyRes, req, res) => {
-        // 删除可能导致问题的响应头
-        delete proxyRes.headers['strict-transport-security'];
-        delete proxyRes.headers['content-security-policy'];
+// 创建代理处理函数
+app.use('/', async (req, res) => {
+    try {
+        // 构建目标 URL
+        const targetUrl = new URL(req.url, EMBY_SERVER);
         
-        // 添加 CORS 头
-        proxyRes.headers['Access-Control-Allow-Origin'] = '*';
-        proxyRes.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS';
-        proxyRes.headers['Access-Control-Allow-Headers'] = '*';
-
-        // 对视频流的特殊处理
-        const contentType = proxyRes.headers['content-type'] || '';
-        if (contentType.includes('video/') || contentType.includes('audio/')) {
-            proxyRes.headers['Cache-Control'] = 'public, max-age=3600';
-            proxyRes.headers['Transfer-Encoding'] = 'chunked';
-            if (res.socket) {
-                res.socket.setNoDelay(true);
+        // 选择合适的协议
+        const protocol = targetUrl.protocol === 'https:' ? https : http;
+        
+        // 设置请求选项
+        const options = {
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (targetUrl.protocol === 'https:' ? 443 : 80),
+            path: targetUrl.pathname + targetUrl.search,
+            method: req.method,
+            headers: {
+                ...req.headers,
+                host: targetUrl.host,
             }
+        };
+
+        // 创建代理请求
+        const proxyReq = protocol.request(options, (proxyRes) => {
+            // 设置响应头
+            res.writeHead(proxyRes.statusCode, {
+                ...proxyRes.headers,
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+                'Access-Control-Allow-Headers': '*'
+            });
+
+            // 如果是视频或音频内容，添加特殊处理
+            const contentType = proxyRes.headers['content-type'] || '';
+            if (contentType.includes('video/') || contentType.includes('audio/')) {
+                res.setHeader('Cache-Control', 'public, max-age=3600');
+                if (res.socket) {
+                    res.socket.setNoDelay(true);
+                }
+            }
+
+            // 流式传输响应
+            proxyRes.pipe(res);
+        });
+
+        // 错误处理
+        proxyReq.on('error', (error) => {
+            console.error('Proxy Error:', error);
+            if (!res.headersSent) {
+                res.status(502).json({
+                    error: 'Proxy Error',
+                    message: 'Failed to connect to Emby server',
+                    details: error.message
+                });
+            }
+        });
+
+        // 如果有请求体，转发它
+        if (req.body) {
+            proxyReq.write(JSON.stringify(req.body));
         }
-    },
-    onError: (err, req, res) => {
-        console.error('Proxy Error:', err);
+
+        // 结束请求
+        proxyReq.end();
+    } catch (error) {
+        console.error('Error:', error);
         if (!res.headersSent) {
-            res.status(502).json({ 
-                error: 'Proxy Error', 
-                message: 'The request to Emby server failed',
-                details: err.message 
+            res.status(500).json({
+                error: 'Internal Server Error',
+                message: error.message
             });
         }
     }
-};
-
-// 设置代理中间件
-app.use('/', createProxyMiddleware(proxyOptions));
+});
 
 // 导出应用实例供 Vercel 使用
 module.exports = app; 
