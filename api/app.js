@@ -1,8 +1,8 @@
 const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
 const compression = require('compression');
 const http = require('http');
 const https = require('https');
+const WebSocket = require('ws');
 require('dotenv').config();
 
 const app = express();
@@ -23,6 +23,38 @@ app.get('/healthz', (req, res) => {
     res.json({ status: 'healthy' });
 });
 
+// WebSocket 处理
+app.use('/embywebsocket', (req, res) => {
+    try {
+        const targetUrl = new URL('/embywebsocket', EMBY_SERVER);
+        const ws = new WebSocket(targetUrl.href);
+
+        ws.on('open', () => {
+            res.writeHead(101, {
+                'Upgrade': 'websocket',
+                'Connection': 'Upgrade'
+            });
+            ws.pipe(res);
+        });
+
+        ws.on('error', (error) => {
+            console.error('WebSocket Error:', error);
+            if (!res.headersSent) {
+                res.status(502).json({
+                    error: 'WebSocket Error',
+                    message: error.message
+                });
+            }
+        });
+    } catch (error) {
+        console.error('WebSocket Setup Error:', error);
+        res.status(500).json({
+            error: 'WebSocket Setup Error',
+            message: error.message
+        });
+    }
+});
+
 // 创建代理处理函数
 app.use('/', async (req, res) => {
     try {
@@ -41,27 +73,31 @@ app.use('/', async (req, res) => {
             headers: {
                 ...req.headers,
                 host: targetUrl.host,
-            }
+            },
+            timeout: req.url.includes('PlaybackInfo') ? 120000 : 60000 // 为播放信息请求设置更长的超时时间
         };
 
         // 创建代理请求
         const proxyReq = protocol.request(options, (proxyRes) => {
             // 设置响应头
-            res.writeHead(proxyRes.statusCode, {
+            const headers = {
                 ...proxyRes.headers,
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
                 'Access-Control-Allow-Headers': '*'
-            });
+            };
 
             // 如果是视频或音频内容，添加特殊处理
             const contentType = proxyRes.headers['content-type'] || '';
             if (contentType.includes('video/') || contentType.includes('audio/')) {
-                res.setHeader('Cache-Control', 'public, max-age=3600');
+                headers['Cache-Control'] = 'public, max-age=3600';
                 if (res.socket) {
                     res.socket.setNoDelay(true);
+                    res.socket.setTimeout(300000); // 5分钟超时
                 }
             }
+
+            res.writeHead(proxyRes.statusCode, headers);
 
             // 流式传输响应
             proxyRes.pipe(res);
@@ -79,9 +115,21 @@ app.use('/', async (req, res) => {
             }
         });
 
+        // 超时处理
+        proxyReq.on('timeout', () => {
+            proxyReq.destroy();
+            if (!res.headersSent) {
+                res.status(504).json({
+                    error: 'Gateway Timeout',
+                    message: 'Request to Emby server timed out'
+                });
+            }
+        });
+
         // 如果有请求体，转发它
-        if (req.body) {
-            proxyReq.write(JSON.stringify(req.body));
+        if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
+            const bodyData = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+            proxyReq.write(bodyData);
         }
 
         // 结束请求
