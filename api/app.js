@@ -82,10 +82,18 @@ app.use('/embywebsocket', (req, res) => {
 });
 
 // 视频流处理
-app.use('/emby/videos/:id/*', async (req, res) => {
+app.use(['/emby/videos/:id/*', '/Videos/:id/*'], async (req, res) => {
     try {
         const targetUrl = new URL(req.url, EMBY_SERVER);
         const protocol = targetUrl.protocol === 'https:' ? https : http;
+
+        // 如果是重定向的web路径，直接返回视频流
+        if (req.url.includes('/web/')) {
+            const videoId = req.params.id;
+            const newUrl = `/emby/videos/${videoId}/original.mkv`;
+            res.redirect(newUrl);
+            return;
+        }
         
         // 获取范围请求头
         const range = req.headers.range;
@@ -109,6 +117,15 @@ app.use('/emby/videos/:id/*', async (req, res) => {
 
         // 创建请求
         const proxyReq = protocol.request(options, (proxyRes) => {
+            // 如果是重定向响应
+            if (proxyRes.statusCode === 302 || proxyRes.statusCode === 301) {
+                const location = proxyRes.headers.location;
+                if (location) {
+                    res.redirect(location);
+                    return;
+                }
+            }
+
             // 设置响应头
             const headers = {
                 ...proxyRes.headers,
