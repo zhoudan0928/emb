@@ -1,0 +1,33 @@
+{
+  "routes": [
+    {
+      "match": "/embywebsocket",
+      "url": "/api/app.js"
+    },
+    {
+      "match": "/Videos/(.*)|/Audio/(.*)",
+      "url": "/api/app.js",
+      "headers": {
+        "Cache-Control": "public, max-age=3600",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+      }
+    },
+    {
+      "match": "/(.*)",
+      "url": "/api/app.js",
+      "headers": {
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "*"
+      }
+    }
+  ],
+  "functions": {
+    "api/app.js": {
+      "runtime": "nodejs18"
+    }
+  }
+} 
